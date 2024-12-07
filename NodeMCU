@@ -1,13 +1,12 @@
-//Bu benim ESP8266 çalışmalarımdır. İşlemci ile oynuyorum biraz.
-
-
 #include <Arduino.h>
 #include <FS.h>
 #include <LittleFS.h>
 #include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
 #include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
+#include <ESP.h> // ESP.restart() için
 
 /*
  * Bağlantılar (NodeMCU v3 ile ST7735):
@@ -20,12 +19,10 @@
  * VCC           -> 3.3V
  */
 
-// Pin tanımları
 #define TFT_CS   D8   // GPIO15
 #define TFT_DC   D3   // GPIO0
 #define TFT_RST  D4   // GPIO2
 
-// TFT ekranı başlat
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 
 #define MAX_SAVED_NETWORKS 5
@@ -37,37 +34,46 @@ struct SavedNetwork {
 
 SavedNetwork savedNetworks[MAX_SAVED_NETWORKS];
 
-// Global değişkenler
-int networkCount = 0;            // Bulunan ağ sayısı
-String scannedSSIDs[10];         // İlk 10 SSID
-int scannedRSSI[10];             // RSSI değerleri
+int networkCount = 0;            
+String scannedSSIDs[10];         
+int scannedRSSI[10];             
 
-// Fonksiyon Deklarasyonları
+ESP8266WebServer server(80);
+
+// Seri üzerinden 5 kere 0 girme sayacı
+int zeroPressCount = 0;
+
+// Logonun Base64 verisi (EKLENDİ)
+const char* logoBase64 = "data:image/png;base64,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"; 
+
+void displayMessage(String msg);
 void loadSavedNetworks();
 void saveNetworksToLittleFS();
 void listSavedNetworksOnSerialAndTFT();
 void scanAndDisplayNetworks();
-int waitForSerialNumberInput(int minVal, int maxVal);
-String waitForSerialStringInput();
 void connectToSavedNetworkIfAvailable();
 int findSavedNetwork(String ssid);
 void removeSavedNetwork(int index);
-void displayMessage(String msg);
+void clearAllNetworks();
+void startAPMode();
+void handleRoot();
+void handleAddNetwork();
+void handleClearNetworks();
+
+bool waitForSerialInput(String &input, unsigned long timeout_ms);
+bool waitForSerialNumber(int &value, int minVal, int maxVal, unsigned long timeout_ms);
+bool waitForSerialPassword(String &pwd, unsigned long timeout_ms);
 
 void setup() {
   Serial.begin(115200);
   
-  // LittleFS başlat
   if(!LittleFS.begin()){
     Serial.println("LittleFS baslatilamadi!");
   }
 
-  // Ekranı başlat
-  // Bazı ST7735 ekranlarında initR(...) için farklı parametreler gerekebilir.
-  // Gerekirse INITR_BLACKTAB yerine INITR_GREENTAB veya INITR_REDTAB deneyebilirsin.
   tft.initR(INITR_BLACKTAB);
   tft.setRotation(1); 
-  tft.fillScreen(INITR_GREENTAB);
+  tft.fillScreen(ST77XX_BLACK);
   tft.setTextColor(ST77XX_WHITE);
   tft.setTextWrap(true);
 
@@ -78,63 +84,115 @@ void setup() {
   
   connectToSavedNetworkIfAvailable();
 
-  // Eğer bağlantı kurulamadıysa veya kayıtlı ağ yoksa
-  // Kullanıcıdan girişler al.
+  // Bağlanamadıysa 10 saniye bekle tekrar dene
   if (WiFi.status() != WL_CONNECTED) {
-    displayMessage("Tanımlı SSID yok, Baglanmak icin 0'a basin...");
-    int cmd = waitForSerialNumberInput(0,0);
-    if (cmd == 0) {
-      displayMessage("0 girdiniz. Bir ag secin (1-10):");
-      int chosen = waitForSerialNumberInput(1,10);
-      if (chosen > 0 && chosen <= 10 && scannedSSIDs[chosen-1].length() > 0) {
-        String chosenSSID = scannedSSIDs[chosen-1];
-        displayMessage("Secilen SSID: " + chosenSSID);
-        displayMessage("Sifre giriniz:");
-        String pwd = waitForSerialStringInput();
-        
-        // Yeni SSID/pwd ekle
-        int emptySlot = -1;
-        for (int i=0; i<MAX_SAVED_NETWORKS; i++) {
-          if (savedNetworks[i].ssid == "") {
-            emptySlot = i;
-            break;
-          }
-        }
+    displayMessage("Tanımlı ag yok veya baglanilamadi, 10 sn bekle...");
+    delay(10000);
+    scanAndDisplayNetworks();
+    connectToSavedNetworkIfAvailable();
+  }
 
-        if (emptySlot == -1) {
-          // Hafiza dolu, silinecek kaydi sor
-          displayMessage("5 kayit dolu, hangisini sileceksiniz? (1-5)");
-          listSavedNetworksOnSerialAndTFT();
-          int toDelete = waitForSerialNumberInput(1,5);
-          removeSavedNetwork(toDelete-1);
-          emptySlot = toDelete-1;
-        }
+  // Hâlâ bağlanamadıysa seri giriş iste:
+  if (WiFi.status() != WL_CONNECTED) {
+    displayMessage("Baglanilamadi. Baglanmak icin 0'a basin (seri). 15 sn icinde giris yapilmazsa AP mod...");
 
-        // Yeni kaydi ekle
-        savedNetworks[emptySlot].ssid = chosenSSID;
-        savedNetworks[emptySlot].password = pwd;
-        saveNetworksToLittleFS();
-        displayMessage("Yeni SSID kaydedildi. Baglaniyor...");
-        WiFi.begin(chosenSSID.c_str(), pwd.c_str());
-        int timeout = 0;
-        while (WiFi.status() != WL_CONNECTED && timeout < 20) {
-          delay(500);
-          timeout++;
-        }
-        if (WiFi.status() == WL_CONNECTED) {
-          displayMessage("Baglanti kuruldu IP: " + WiFi.localIP().toString());
-        } else {
-          displayMessage("Baglanti basarisiz!");
-        }
-      } else {
-        displayMessage("Gecersiz secim.");
-      }
+    String input;
+    if(!waitForSerialInput(input, 15000)) {
+      startAPMode();
+      return;
     }
+
+    if (input != "0") {
+      displayMessage("Gecersiz giris. AP moduna geciliyor...");
+      startAPMode();
+      return;
+    }
+
+    displayMessage("0 girdiniz. Bir ag secin (1-10):");
+    int chosen = -1;
+    if(!waitForSerialNumber(chosen, 1, 10, 15000)) {
+      displayMessage("Zaman asimi. AP moduna geciliyor...");
+      startAPMode();
+      return;
+    }
+
+    if (chosen > 0 && chosen <= 10 && scannedSSIDs[chosen-1].length() > 0) {
+      String chosenSSID = scannedSSIDs[chosen-1];
+      displayMessage("Secilen SSID: " + chosenSSID);
+      displayMessage("Sifre giriniz:");
+      String pwd;
+      if(!waitForSerialPassword(pwd, 15000)) {
+        displayMessage("Sifre girilmedi. AP moduna geciliyor...");
+        startAPMode();
+        return;
+      }
+
+      int emptySlot = -1;
+      for (int i=0; i<MAX_SAVED_NETWORKS; i++) {
+        if (savedNetworks[i].ssid == "") {
+          emptySlot = i;
+          break;
+        }
+      }
+
+      if (emptySlot == -1) {
+        displayMessage("5 kayit dolu, hangisini sileceksiniz? (1-5)");
+        listSavedNetworksOnSerialAndTFT();
+        int toDelete = -1;
+        if(!waitForSerialNumber(toDelete, 1, 5, 15000)) {
+          displayMessage("Zaman asimi. AP moduna geciliyor...");
+          startAPMode();
+          return;
+        }
+
+        removeSavedNetwork(toDelete-1);
+        emptySlot = toDelete-1;
+      }
+
+      savedNetworks[emptySlot].ssid = chosenSSID;
+      savedNetworks[emptySlot].password = pwd;
+      saveNetworksToLittleFS();
+      displayMessage("Yeni SSID kaydedildi. Sistem yeniden başlıyor...");
+      delay(1000);
+      ESP.restart();
+    } else {
+      displayMessage("Gecersiz secim. AP moduna geciliyor.");
+      startAPMode();
+      return;
+    }
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    startAPMode();
   }
 }
 
 void loop() {
-  // Sürekli döngüde ek bir işlem şart değil.
+  // Web server isteklerini dinliyoruz.
+  server.handleClient();
+
+  // Her zaman seri girişi kontrol edelim.
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '0') {
+      zeroPressCount++;
+      if (zeroPressCount >= 5) {
+        clearAllNetworks();
+        zeroPressCount = 0;
+      }
+    } else {
+      // 0 harici karakter görürsek sayacı sıfırla
+      zeroPressCount = 0;
+    }
+  }
+}
+
+
+void displayMessage(String msg) {
+  Serial.println(msg);
+  tft.fillScreen(ST77XX_BLACK);
+  tft.setCursor(0,0);
+  tft.println(msg);
 }
 
 void loadSavedNetworks() {
@@ -145,7 +203,6 @@ void loadSavedNetworks() {
 
   File f = LittleFS.open("/savedNetworks.txt", "r");
   if(!f) {
-    // Dosya yoksa sorun değil.
     return;
   }
 
@@ -204,7 +261,7 @@ void scanAndDisplayNetworks() {
     scannedRSSI[i] = WiFi.RSSI(i);
   }
 
-  // RSSI'ye göre sırala (yüksekten düşüğe)
+  // RSSI'ye göre sıralama
   for (int i=0; i<limit-1; i++) {
     for (int j=i+1; j<limit; j++) {
       if (scannedRSSI[j] > scannedRSSI[i]) {
@@ -218,55 +275,16 @@ void scanAndDisplayNetworks() {
     }
   }
 
-  // Ekranı temizle ve tarama sonuçlarını yazdır
   tft.fillScreen(ST77XX_BLACK);
   tft.setCursor(0,0);
   tft.println("SSID Listesi (1-10):");
 
   Serial.println("Bulunan Ağlar (Sinyal Gücüne Göre Sıralı):");
-  for (int i=0; i<limit; i++) {
+  int limitPrint = networkCount < 10 ? networkCount : 10;
+  for (int i=0; i<limitPrint; i++) {
     String networkInfo = String(i+1) + ": " + scannedSSIDs[i] + " (" + String(scannedRSSI[i]) + " dBm)";
-    // Hem seri hem ekran
     Serial.println(networkInfo);
     tft.println(networkInfo);
-  }
-}
-
-int waitForSerialNumberInput(int minVal, int maxVal) {
-  // minVal=maxVal=0 ise sadece 0'ı bekliyoruz.
-  while(true) {
-    if (Serial.available()) {
-      String input = Serial.readStringUntil('\n');
-      input.trim();
-      if (input.length() > 0) {
-        int val = input.toInt();
-        if (maxVal == 0 && minVal == 0) {
-          // Sadece 0 bekleniyor
-          if (val == 0) return val;
-        } else {
-          if (val >= minVal && val <= maxVal) {
-            return val;
-          }
-        }
-      }
-      displayMessage("Gecersiz giris, tekrar deneyin.");
-    }
-    delay(100);
-  }
-}
-
-String waitForSerialStringInput() {
-  while(true) {
-    if (Serial.available()) {
-      String input = Serial.readStringUntil('\n');
-      input.trim();
-      if (input.length() > 0) {
-        return input;
-      } else {
-        displayMessage("Bos giris, tekrar deneyin.");
-      }
-    }
-    delay(100);
   }
 }
 
@@ -275,7 +293,6 @@ void connectToSavedNetworkIfAvailable() {
   for (int i=0; i<limit; i++) {
     int idx = findSavedNetwork(scannedSSIDs[i]);
     if (idx >= 0) {
-      // Kayıtlı ağ bulundu, bağlanmayı dene
       displayMessage("Kayitli SSID bulundu: " + savedNetworks[idx].ssid);
       WiFi.begin(savedNetworks[idx].ssid.c_str(), savedNetworks[idx].password.c_str());
       int timeout = 0;
@@ -285,7 +302,7 @@ void connectToSavedNetworkIfAvailable() {
       }
       if (WiFi.status() == WL_CONNECTED) {
         displayMessage("Basariyla Baglanildi. IP: " + WiFi.localIP().toString());
-        return; // ilk başarılı buluşta çık
+        return;
       } else {
         displayMessage("Baglanti basarisiz: " + savedNetworks[idx].ssid);
       }
@@ -306,9 +323,218 @@ void removeSavedNetwork(int index) {
   saveNetworksToLittleFS();
 }
 
-void displayMessage(String msg) {
-  Serial.println(msg);
-  tft.fillScreen(ST77XX_BLACK);
-  tft.setCursor(0,0);
-  tft.println(msg);
+void clearAllNetworks() {
+  for (int i=0; i<MAX_SAVED_NETWORKS; i++) {
+    savedNetworks[i].ssid = "";
+    savedNetworks[i].password = "";
+  }
+  saveNetworksToLittleFS();
+  displayMessage("Tum SSID bilgileri silindi!");
+}
+
+void startAPMode() {
+  displayMessage("AP modu baslatiyor...");
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP("MyESP", "12345678");
+  IPAddress IP = WiFi.softAPIP();
+  Serial.print("AP IP: "); Serial.println(IP);
+
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/add", HTTP_POST, handleAddNetwork);
+  server.on("/clear", HTTP_GET, handleClearNetworks);
+
+  server.begin();
+  displayMessage("Web server baslatildi. 192.168.4.1 adresinden baglanabilirsiniz.");
+}
+
+void handleRoot() {
+  String page = "<!DOCTYPE html><html><head>";
+  page += "<meta charset=\"UTF-8\">";
+  page += "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">";
+  page += "<title>Cihaz WiFi Ayarları</title>";
+  page += "<style>";
+  page += "body { font-family: sans-serif; }";
+  page += "h1 { font-size: 1.8em; text-align: center; }";
+  page += "h2 { font-size: 1.2em; }";
+  page += "select { font-size: 1.2em; }";
+  page += "img { display: block; margin: 0 auto; width: 150px; height: auto; }";
+  page += "</style>";
+  page += "</head><body>";
+
+  // Logo Eklendi
+  page += "<img src=\"" + String(logoBase64) + "\" alt=\"Logo\">";
+
+  page += "<h1>Cihaz WiFi Ayarları</h1>";
+  
+  // Kayıtlı Ağlar
+  page += "<h2>Kayıtlı Ağlar</h2><ul>";
+  {
+    int limit = MAX_SAVED_NETWORKS;
+    for (int i=0; i<limit; i++) {
+      if (savedNetworks[i].ssid.length() > 0) {
+        page += "<li>" + savedNetworks[i].ssid + "</li>";
+      }
+    }
+  }
+  page += "</ul>";
+
+  // Bulunan Ağlar (daha önce Taranmış Ağlar'dı)
+  page += "<h2>Bulunan Ağlar</h2><ul>";
+  {
+    int limit = networkCount < 10 ? networkCount : 10;
+    for (int i=0; i<limit; i++) {
+      page += "<li>" + String(i+1) + ": " + scannedSSIDs[i] + " (" + String(scannedRSSI[i]) + " dBm)</li>";
+    }
+  }
+  page += "</ul>";
+  
+  // Yeni Ağ Ekleme Formu
+  page += "<h2>Yeni Ağ Ekle</h2>";
+  page += "<form action=\"/add\" method=\"POST\">";
+  
+  page += "SSID Seç:<br>";
+  {
+    int limit = networkCount < 10 ? networkCount : 10;
+    page += "<select name=\"ssid\">";
+    for (int i=0; i<limit; i++) {
+      page += "<option value=\"" + scannedSSIDs[i] + "\">" + scannedSSIDs[i] + " (" + String(scannedRSSI[i]) + " dBm)</option>";
+    }
+    page += "</select><br><br>";
+  }
+  
+  page += "Şifre:<br><input type=\"password\" name=\"pwd\" style=\"font-size: 1.2em;\"><br><br>";
+  page += "<input type=\"submit\" value=\"Kaydet\" style=\"font-size: 1.2em;\">";
+  page += "</form>";
+  
+  page += "<h2>Tüm Kayıtlı Ağları Sil</h2>";
+  page += "<a href=\"/clear\">Hepsini Sil</a>";
+  
+  page += "</body></html>";
+
+  server.send(200, "text/html; charset=UTF-8", page);
+}
+
+void handleAddNetwork() {
+  if (server.hasArg("ssid") && server.hasArg("pwd")) {
+    String ssid = server.arg("ssid");
+    String pwd = server.arg("pwd");
+
+    int emptySlot = -1;
+    for (int i=0; i<MAX_SAVED_NETWORKS; i++) {
+      if (savedNetworks[i].ssid == "") {
+        emptySlot = i;
+        break;
+      }
+    }
+
+    if (emptySlot == -1) {
+      removeSavedNetwork(0);
+      emptySlot = 0;
+    }
+
+    savedNetworks[emptySlot].ssid = ssid;
+    savedNetworks[emptySlot].password = pwd;
+    saveNetworksToLittleFS();
+
+    server.send(200, "text/html; charset=UTF-8", "<html><body><h1>SSID Kaydedildi! Sistem yeniden başlıyor...</h1><a href=\"/\">Geri Dön</a></body></html>");
+    delay(1000);
+    ESP.restart(); 
+  } else {
+    server.send(400, "text/html; charset=UTF-8", "<html><body><h1>Hata: SSID veya Şifre eksik</h1><a href=\"/\">Geri Dön</a></body></html>");
+  }
+}
+
+void handleClearNetworks() {
+  clearAllNetworks();
+  server.send(200, "text/html; charset=UTF-8", "<html><body><h1>Tüm SSID'ler Silindi!</h1><a href=\"/\">Geri Dön</a></body></html>");
+}
+
+bool waitForSerialInput(String &input, unsigned long timeout_ms) {
+  unsigned long start = millis();
+  while (millis() - start < timeout_ms) {
+    if (Serial.available()) {
+      String line = Serial.readStringUntil('\n');
+      line.trim();
+      // 5 sifir kontrolu
+      for (unsigned int i = 0; i < line.length(); i++) {
+        if (line.charAt(i) == '0') {
+          zeroPressCount++;
+          if (zeroPressCount >= 5) {
+            clearAllNetworks();
+            zeroPressCount = 0; 
+          }
+        } else {
+          zeroPressCount = 0;
+        }
+      }
+      input = line;
+      return true;
+    }
+    delay(50);
+  }
+  return false;
+}
+
+bool waitForSerialNumber(int &value, int minVal, int maxVal, unsigned long timeout_ms) {
+  unsigned long start = millis();
+  while (millis() - start < timeout_ms) {
+    if (Serial.available()) {
+      String line = Serial.readStringUntil('\n');
+      line.trim();
+      // 5 sifir kontrolu
+      for (unsigned int i = 0; i < line.length(); i++) {
+        if (line.charAt(i) == '0') {
+          zeroPressCount++;
+          if (zeroPressCount >= 5) {
+            clearAllNetworks();
+            zeroPressCount = 0; 
+          }
+        } else {
+          zeroPressCount = 0;
+        }
+      }
+
+      int val = line.toInt();
+      if (val >= minVal && val <= maxVal) {
+        value = val;
+        return true;
+      } else {
+        displayMessage("Gecersiz giris, " + String(minVal) + "-" + String(maxVal) + " arasinda secim yapin.");
+      }
+    }
+    delay(50);
+  }
+  return false;
+}
+
+bool waitForSerialPassword(String &pwd, unsigned long timeout_ms) {
+  unsigned long start = millis();
+  while (millis() - start < timeout_ms) {
+    if (Serial.available()) {
+      String line = Serial.readStringUntil('\n');
+      line.trim();
+
+      // 5 sifir kontrolu
+      for (unsigned int i = 0; i < line.length(); i++) {
+        if (line.charAt(i) == '0') {
+          zeroPressCount++;
+          if (zeroPressCount >= 5) {
+            clearAllNetworks();
+            zeroPressCount = 0; 
+          }
+        } else {
+          zeroPressCount = 0;
+        }
+      }
+
+      if (line.length() > 0) {
+        pwd = line;
+        return true;
+      } else {
+        displayMessage("Bos giris, tekrar deneyin.");
+      }
+    }
+    delay(50);
+  }
+  return false;
 }
