@@ -1,0 +1,314 @@
+//Bu benim ESP8266 çalışmalarımdır. İşlemci ile oynuyorum biraz.
+
+
+#include <Arduino.h>
+#include <FS.h>
+#include <LittleFS.h>
+#include <ESP8266WiFi.h>
+#include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7735.h>
+
+/*
+ * Bağlantılar (NodeMCU v3 ile ST7735):
+ * DC (TFT_DC)   -> D3 (GPIO0)
+ * RST (TFT_RST) -> D4 (GPIO2)
+ * SCK (CLK)     -> D5 (GPIO14)
+ * MOSI          -> D7 (GPIO13)
+ * CS (TFT_CS)   -> D8 (GPIO15)
+ * GND           -> G
+ * VCC           -> 3.3V
+ */
+
+// Pin tanımları
+#define TFT_CS   D8   // GPIO15
+#define TFT_DC   D3   // GPIO0
+#define TFT_RST  D4   // GPIO2
+
+// TFT ekranı başlat
+Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
+
+#define MAX_SAVED_NETWORKS 5
+
+struct SavedNetwork {
+  String ssid;
+  String password;
+};
+
+SavedNetwork savedNetworks[MAX_SAVED_NETWORKS];
+
+// Global değişkenler
+int networkCount = 0;            // Bulunan ağ sayısı
+String scannedSSIDs[10];         // İlk 10 SSID
+int scannedRSSI[10];             // RSSI değerleri
+
+// Fonksiyon Deklarasyonları
+void loadSavedNetworks();
+void saveNetworksToLittleFS();
+void listSavedNetworksOnSerialAndTFT();
+void scanAndDisplayNetworks();
+int waitForSerialNumberInput(int minVal, int maxVal);
+String waitForSerialStringInput();
+void connectToSavedNetworkIfAvailable();
+int findSavedNetwork(String ssid);
+void removeSavedNetwork(int index);
+void displayMessage(String msg);
+
+void setup() {
+  Serial.begin(115200);
+  
+  // LittleFS başlat
+  if(!LittleFS.begin()){
+    Serial.println("LittleFS baslatilamadi!");
+  }
+
+  // Ekranı başlat
+  // Bazı ST7735 ekranlarında initR(...) için farklı parametreler gerekebilir.
+  // Gerekirse INITR_BLACKTAB yerine INITR_GREENTAB veya INITR_REDTAB deneyebilirsin.
+  tft.initR(INITR_BLACKTAB);
+  tft.setRotation(1); 
+  tft.fillScreen(INITR_GREENTAB);
+  tft.setTextColor(ST77XX_WHITE);
+  tft.setTextWrap(true);
+
+  displayMessage("WiFi Yonetim Sistemi Basladi...");
+
+  loadSavedNetworks();  
+  scanAndDisplayNetworks();
+  
+  connectToSavedNetworkIfAvailable();
+
+  // Eğer bağlantı kurulamadıysa veya kayıtlı ağ yoksa
+  // Kullanıcıdan girişler al.
+  if (WiFi.status() != WL_CONNECTED) {
+    displayMessage("Tanımlı SSID yok, Baglanmak icin 0'a basin...");
+    int cmd = waitForSerialNumberInput(0,0);
+    if (cmd == 0) {
+      displayMessage("0 girdiniz. Bir ag secin (1-10):");
+      int chosen = waitForSerialNumberInput(1,10);
+      if (chosen > 0 && chosen <= 10 && scannedSSIDs[chosen-1].length() > 0) {
+        String chosenSSID = scannedSSIDs[chosen-1];
+        displayMessage("Secilen SSID: " + chosenSSID);
+        displayMessage("Sifre giriniz:");
+        String pwd = waitForSerialStringInput();
+        
+        // Yeni SSID/pwd ekle
+        int emptySlot = -1;
+        for (int i=0; i<MAX_SAVED_NETWORKS; i++) {
+          if (savedNetworks[i].ssid == "") {
+            emptySlot = i;
+            break;
+          }
+        }
+
+        if (emptySlot == -1) {
+          // Hafiza dolu, silinecek kaydi sor
+          displayMessage("5 kayit dolu, hangisini sileceksiniz? (1-5)");
+          listSavedNetworksOnSerialAndTFT();
+          int toDelete = waitForSerialNumberInput(1,5);
+          removeSavedNetwork(toDelete-1);
+          emptySlot = toDelete-1;
+        }
+
+        // Yeni kaydi ekle
+        savedNetworks[emptySlot].ssid = chosenSSID;
+        savedNetworks[emptySlot].password = pwd;
+        saveNetworksToLittleFS();
+        displayMessage("Yeni SSID kaydedildi. Baglaniyor...");
+        WiFi.begin(chosenSSID.c_str(), pwd.c_str());
+        int timeout = 0;
+        while (WiFi.status() != WL_CONNECTED && timeout < 20) {
+          delay(500);
+          timeout++;
+        }
+        if (WiFi.status() == WL_CONNECTED) {
+          displayMessage("Baglanti kuruldu IP: " + WiFi.localIP().toString());
+        } else {
+          displayMessage("Baglanti basarisiz!");
+        }
+      } else {
+        displayMessage("Gecersiz secim.");
+      }
+    }
+  }
+}
+
+void loop() {
+  // Sürekli döngüde ek bir işlem şart değil.
+}
+
+void loadSavedNetworks() {
+  for (int i=0; i<MAX_SAVED_NETWORKS; i++) {
+    savedNetworks[i].ssid = "";
+    savedNetworks[i].password = "";
+  }
+
+  File f = LittleFS.open("/savedNetworks.txt", "r");
+  if(!f) {
+    // Dosya yoksa sorun değil.
+    return;
+  }
+
+  int index = 0;
+  while (f.available() && index < MAX_SAVED_NETWORKS) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if(line.length() > 0) {
+      int sep = line.indexOf(';');
+      if (sep > 0) {
+        savedNetworks[index].ssid = line.substring(0, sep);
+        savedNetworks[index].password = line.substring(sep+1);
+        index++;
+      }
+    }
+  }
+  f.close();
+}
+
+void saveNetworksToLittleFS() {
+  File f = LittleFS.open("/savedNetworks.txt", "w");
+  if(!f) {
+    displayMessage("Dosya yazma hatasi!");
+    return;
+  }
+  for (int i=0; i<MAX_SAVED_NETWORKS; i++) {
+    if (savedNetworks[i].ssid.length() > 0 && savedNetworks[i].password.length() > 0) {
+      f.println(savedNetworks[i].ssid + ";" + savedNetworks[i].password);
+    }
+  }
+  f.close();
+}
+
+void listSavedNetworksOnSerialAndTFT() {
+  tft.fillScreen(ST77XX_BLACK);
+  tft.setCursor(0,0);
+  for (int i=0; i<MAX_SAVED_NETWORKS; i++) {
+    String info = String(i+1) + ": " + savedNetworks[i].ssid;
+    Serial.println(info);
+    tft.println(info);
+  }
+}
+
+void scanAndDisplayNetworks() {
+  displayMessage("Aglar taraniyor...");
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  delay(100);
+
+  networkCount = WiFi.scanNetworks();
+  displayMessage(String(networkCount) + " ag bulundu.");
+
+  int limit = networkCount < 10 ? networkCount : 10;
+  for (int i=0; i<limit; i++) {
+    scannedSSIDs[i] = WiFi.SSID(i);
+    scannedRSSI[i] = WiFi.RSSI(i);
+  }
+
+  // RSSI'ye göre sırala (yüksekten düşüğe)
+  for (int i=0; i<limit-1; i++) {
+    for (int j=i+1; j<limit; j++) {
+      if (scannedRSSI[j] > scannedRSSI[i]) {
+        String tmpS = scannedSSIDs[i];
+        int tmpR = scannedRSSI[i];
+        scannedSSIDs[i] = scannedSSIDs[j];
+        scannedRSSI[i] = scannedRSSI[j];
+        scannedSSIDs[j] = tmpS;
+        scannedRSSI[j] = tmpR;
+      }
+    }
+  }
+
+  // Ekranı temizle ve tarama sonuçlarını yazdır
+  tft.fillScreen(ST77XX_BLACK);
+  tft.setCursor(0,0);
+  tft.println("SSID Listesi (1-10):");
+
+  Serial.println("Bulunan Ağlar (Sinyal Gücüne Göre Sıralı):");
+  for (int i=0; i<limit; i++) {
+    String networkInfo = String(i+1) + ": " + scannedSSIDs[i] + " (" + String(scannedRSSI[i]) + " dBm)";
+    // Hem seri hem ekran
+    Serial.println(networkInfo);
+    tft.println(networkInfo);
+  }
+}
+
+int waitForSerialNumberInput(int minVal, int maxVal) {
+  // minVal=maxVal=0 ise sadece 0'ı bekliyoruz.
+  while(true) {
+    if (Serial.available()) {
+      String input = Serial.readStringUntil('\n');
+      input.trim();
+      if (input.length() > 0) {
+        int val = input.toInt();
+        if (maxVal == 0 && minVal == 0) {
+          // Sadece 0 bekleniyor
+          if (val == 0) return val;
+        } else {
+          if (val >= minVal && val <= maxVal) {
+            return val;
+          }
+        }
+      }
+      displayMessage("Gecersiz giris, tekrar deneyin.");
+    }
+    delay(100);
+  }
+}
+
+String waitForSerialStringInput() {
+  while(true) {
+    if (Serial.available()) {
+      String input = Serial.readStringUntil('\n');
+      input.trim();
+      if (input.length() > 0) {
+        return input;
+      } else {
+        displayMessage("Bos giris, tekrar deneyin.");
+      }
+    }
+    delay(100);
+  }
+}
+
+void connectToSavedNetworkIfAvailable() {
+  int limit = networkCount < 10 ? networkCount : 10;
+  for (int i=0; i<limit; i++) {
+    int idx = findSavedNetwork(scannedSSIDs[i]);
+    if (idx >= 0) {
+      // Kayıtlı ağ bulundu, bağlanmayı dene
+      displayMessage("Kayitli SSID bulundu: " + savedNetworks[idx].ssid);
+      WiFi.begin(savedNetworks[idx].ssid.c_str(), savedNetworks[idx].password.c_str());
+      int timeout = 0;
+      while (WiFi.status() != WL_CONNECTED && timeout < 20) {
+        delay(500);
+        timeout++;
+      }
+      if (WiFi.status() == WL_CONNECTED) {
+        displayMessage("Basariyla Baglanildi. IP: " + WiFi.localIP().toString());
+        return; // ilk başarılı buluşta çık
+      } else {
+        displayMessage("Baglanti basarisiz: " + savedNetworks[idx].ssid);
+      }
+    }
+  }
+}
+
+int findSavedNetwork(String ssid) {
+  for (int i=0; i<MAX_SAVED_NETWORKS; i++) {
+    if (savedNetworks[i].ssid == ssid) return i;
+  }
+  return -1;
+}
+
+void removeSavedNetwork(int index) {
+  savedNetworks[index].ssid = "";
+  savedNetworks[index].password = "";
+  saveNetworksToLittleFS();
+}
+
+void displayMessage(String msg) {
+  Serial.println(msg);
+  tft.fillScreen(ST77XX_BLACK);
+  tft.setCursor(0,0);
+  tft.println(msg);
+}
